@@ -39,7 +39,7 @@ UINT64 instrCount = 0;
 
 std::ofstream outfile;
 std::ofstream malloc_outfile;
-std::vector<trace_instr_format_t> malloc_traces;
+
 std::vector<trace_instr_format_t> instr_buffer;
 const size_t INSTR_BUFFER_SIZE = 16 * 1024 * 1024; // 16MB buffer
 
@@ -136,23 +136,17 @@ void WriteToSet(T* begin, T* end, UINT32 r)
 VOID MallocBefore(ADDRINT size, ADDRINT ip)
 {
   malloc_outfile << "MALLOC_SIZE " << size << std::endl;
-  trace_instr_format_t instr = {};
-  instr.ip = (unsigned long long int)ip;
-  instr.is_malloc = 1; // 1: malloc
-  instr.source_memory[0] = size;
-  malloc_traces.push_back(instr);
+  event_instr = {};
+  event_instr.ip = (unsigned long long int)ip;
+  event_instr.is_malloc = 1; // 1: malloc
+  event_instr.source_memory[0] = size;
 }
 
 VOID MallocAfter(ADDRINT ret)
 {
   malloc_outfile << "MALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
-  if (!malloc_traces.empty()) {
-    event_instr = {};
-    event_instr = malloc_traces.back();
-    event_instr.destination_memory[0] = ret;
-    WriteEventInstruction();
-    malloc_traces.pop_back();
-  }
+  event_instr.destination_memory[0] = ret;
+  WriteEventInstruction();
 }
 
 VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
@@ -168,44 +162,34 @@ VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
 VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
 {
   malloc_outfile << "CALLOC_SIZE " << nmemb << " " << size << std::endl;
-  trace_instr_format_t instr = {};
-  instr.ip = (unsigned long long int)ip;
-  instr.is_malloc = 2; // 2: calloc
-  instr.source_memory[0] = nmemb * size;
-  malloc_traces.push_back(instr);
+  event_instr = {};
+  event_instr.ip = (unsigned long long int)ip;
+  event_instr.is_malloc = 2; // 2: calloc
+  event_instr.source_memory[0] = nmemb * size;
 }
 
 VOID CallocAfter(ADDRINT ret)
 {
   malloc_outfile << "CALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
-  if (!malloc_traces.empty()) {
-    event_instr = malloc_traces.back();
-    event_instr.destination_memory[0] = ret;
-    WriteEventInstruction();
-    malloc_traces.pop_back();
-  }
+  event_instr.destination_memory[0] = ret;
+  WriteEventInstruction();
 }
 
 VOID ReallocBefore(ADDRINT ptr, ADDRINT size, ADDRINT ip)
 {
   malloc_outfile << "REALLOC_SIZE" << std::dec << " " << size << " REALLOC_PTR 0x" << std::hex << ptr << std::dec << std::endl;
-  trace_instr_format_t instr = {};
-  instr.ip = (unsigned long long int)ip;
-  instr.is_malloc = 3; // 3: realloc
-  instr.source_memory[0] = size;
-  instr.source_memory[1] = ptr;
-  malloc_traces.push_back(instr);
+  event_instr = {};
+  event_instr.ip = (unsigned long long int)ip;
+  event_instr.is_malloc = 3; // 3: realloc
+  event_instr.source_memory[0] = size;
+  event_instr.source_memory[1] = ptr;
 }
 
 VOID ReallocAfter(ADDRINT ret)
 {
   malloc_outfile << "REALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
-  if (!malloc_traces.empty()) {
-    event_instr = malloc_traces.back();
-    event_instr.destination_memory[0] = ret;
-    WriteEventInstruction();
-    malloc_traces.pop_back();
-  }
+  event_instr.destination_memory[0] = ret;
+  WriteEventInstruction();
 }
 
 /* ===================================================================== */
@@ -216,8 +200,6 @@ VOID ReallocAfter(ADDRINT ret)
 VOID ImageLoad(IMG img, VOID* v)
 {
   RTN rtn = RTN_FindByName(img, "malloc");
-  if (!RTN_Valid(rtn))
-    rtn = RTN_FindByName(img, "__libc_malloc");
   if (RTN_Valid(rtn)) {
     RTN_Open(rtn);
     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)MallocBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_INST_PTR, IARG_END);
@@ -226,8 +208,6 @@ VOID ImageLoad(IMG img, VOID* v)
   }
 
   rtn = RTN_FindByName(img, "free");
-  if (!RTN_Valid(rtn))
-    rtn = RTN_FindByName(img, "__libc_free");
   if (RTN_Valid(rtn)) {
     RTN_Open(rtn);
     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)FreeBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_INST_PTR, IARG_END);
@@ -235,8 +215,6 @@ VOID ImageLoad(IMG img, VOID* v)
   }
 
   rtn = RTN_FindByName(img, "calloc");
-  if (!RTN_Valid(rtn))
-    rtn = RTN_FindByName(img, "__libc_calloc");
   if (RTN_Valid(rtn)) {
     RTN_Open(rtn);
     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)CallocBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_INST_PTR, IARG_END);
@@ -245,8 +223,6 @@ VOID ImageLoad(IMG img, VOID* v)
   }
 
   rtn = RTN_FindByName(img, "realloc");
-  if (!RTN_Valid(rtn))
-    rtn = RTN_FindByName(img, "__libc_realloc");
   if (RTN_Valid(rtn)) {
     RTN_Open(rtn);
     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)ReallocBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_INST_PTR, IARG_END);
@@ -307,7 +283,6 @@ VOID Instruction(INS ins, VOID* v)
  *                              PIN_AddFiniFunction function call
  */
 VOID Fini(INT32 code, VOID* v) {
-  // 写入buffer中剩余的数据
   if (!instr_buffer.empty()) {
     outfile.write(reinterpret_cast<const char*>(instr_buffer.data()), 
                  instr_buffer.size() * sizeof(trace_instr_format_t));
