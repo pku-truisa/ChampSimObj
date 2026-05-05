@@ -44,6 +44,7 @@ std::vector<trace_instr_format_t> instr_buffer;
 const size_t INSTR_BUFFER_SIZE = 16 * 1024 * 1024; // 16MB buffer
 
 trace_instr_format_t curr_instr;
+trace_instr_format_t event_instr;
 
 /* ===================================================================== */
 // Command line switches
@@ -106,6 +107,17 @@ void WriteCurrentInstruction()
   }
 }
 
+void WriteEventInstruction()
+{
+  instr_buffer.push_back(event_instr);
+
+  if (instr_buffer.size() * sizeof(trace_instr_format_t) >= INSTR_BUFFER_SIZE) {
+    outfile.write(reinterpret_cast<const char*>(instr_buffer.data()), 
+                 instr_buffer.size() * sizeof(trace_instr_format_t));
+    instr_buffer.clear();
+  }
+}
+
 void BranchOrNot(UINT32 taken)
 {
   curr_instr.is_branch = 1;
@@ -135,9 +147,10 @@ VOID MallocAfter(ADDRINT ret)
 {
   malloc_outfile << "MALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
   if (!malloc_traces.empty()) {
-    curr_instr = malloc_traces.back();
-    curr_instr.destination_memory[0] = ret;
-    WriteCurrentInstruction();
+    event_instr = {};
+    event_instr = malloc_traces.back();
+    event_instr.destination_memory[0] = ret;
+    WriteEventInstruction();
     malloc_traces.pop_back();
   }
 }
@@ -145,11 +158,11 @@ VOID MallocAfter(ADDRINT ret)
 VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
 {
   malloc_outfile << "FREE 0x" << std::hex << ptr << std::dec << std::endl;
-  curr_instr = {};
-  curr_instr.ip = (unsigned long long int)ip;
-  curr_instr.is_malloc = 4; // 4: free
-  curr_instr.source_memory[0] = ptr;
-  WriteCurrentInstruction();
+  event_instr = {};
+  event_instr.ip = (unsigned long long int)ip;
+  event_instr.is_malloc = 4; // 4: free
+  event_instr.source_memory[0] = ptr;
+  WriteEventInstruction();
 }
 
 VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
@@ -166,9 +179,9 @@ VOID CallocAfter(ADDRINT ret)
 {
   malloc_outfile << "CALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
   if (!malloc_traces.empty()) {
-    curr_instr = malloc_traces.back();
-    curr_instr.destination_memory[0] = ret;
-    WriteCurrentInstruction();
+    event_instr = malloc_traces.back();
+    event_instr.destination_memory[0] = ret;
+    WriteEventInstruction();
     malloc_traces.pop_back();
   }
 }
@@ -188,9 +201,9 @@ VOID ReallocAfter(ADDRINT ret)
 {
   malloc_outfile << "REALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
   if (!malloc_traces.empty()) {
-    curr_instr = malloc_traces.back();
-    curr_instr.destination_memory[0] = ret;
-    WriteCurrentInstruction();
+    event_instr = malloc_traces.back();
+    event_instr.destination_memory[0] = ret;
+    WriteEventInstruction();
     malloc_traces.pop_back();
   }
 }
