@@ -41,11 +41,15 @@ struct input_instr {
   unsigned char is_branch;
   unsigned char branch_taken;
 
+  // memory object info
+  unsigned char is_malloc; // 0: is not object; 1: malloc, 2: calloc, 3: realloc, 4: free
+
   unsigned char destination_registers[NUM_INSTR_DESTINATIONS]; // output registers
   unsigned char source_registers[NUM_INSTR_SOURCES];           // input registers
 
-  unsigned long long destination_memory[NUM_INSTR_DESTINATIONS]; // output memory
-  unsigned long long source_memory[NUM_INSTR_SOURCES];           // input memory
+  unsigned long long destination_memory[NUM_INSTR_DESTINATIONS]; // output memory; for malloc, this is return value
+  unsigned long long source_memory[NUM_INSTR_SOURCES];           // input memory; for malloc/calloc/realloc, [0] is the size argument; for free, [0] is the pointer argument
+                                                                 //               for realloc, [1] is the pointer argument
 };
 
 struct cloudsuite_instr {
@@ -56,11 +60,15 @@ struct cloudsuite_instr {
   unsigned char is_branch;
   unsigned char branch_taken;
 
-  unsigned char destination_registers[NUM_INSTR_DESTINATIONS_SPARC]; // output registers
-  unsigned char source_registers[NUM_INSTR_SOURCES];                 // input registers
+  // memory object info
+  unsigned char is_malloc; // 0: is not object; 1: malloc, 2: calloc, 3: realloc, 4: free
 
-  unsigned long long destination_memory[NUM_INSTR_DESTINATIONS_SPARC]; // output memory
-  unsigned long long source_memory[NUM_INSTR_SOURCES];                 // input memory
+  unsigned char destination_registers[NUM_INSTR_DESTINATIONS]; // output registers
+  unsigned char source_registers[NUM_INSTR_SOURCES];           // input registers
+
+  unsigned long long destination_memory[NUM_INSTR_DESTINATIONS]; // output memory; for malloc, this is return value
+  unsigned long long source_memory[NUM_INSTR_SOURCES];           // input memory; for malloc/calloc/realloc, [0] is the size argument; for free, [0] is the pointer argument
+                                                                 //               for realloc, [1] is the pointer argument
 
   unsigned char asid[2];
 };
