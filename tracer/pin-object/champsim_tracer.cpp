@@ -80,6 +80,46 @@ INT32 Usage()
 // Analysis routines
 /* ===================================================================== */
 
+void ResetCurrentInstruction(VOID* ip)
+{
+  curr_instr = {};
+  curr_instr.ip = (unsigned long long int)ip;
+}
+
+BOOL ShouldWrite()
+{
+  ++instrCount;
+  if (KnobTraceInstructions.Value() == 0) {
+    return instrCount > KnobSkipInstructions.Value();
+  }
+  return (instrCount > KnobSkipInstructions.Value()) && (instrCount <= (KnobTraceInstructions.Value() + KnobSkipInstructions.Value()));
+}
+
+void WriteCurrentInstruction()
+{
+  instr_buffer.push_back(curr_instr);
+
+  if (instr_buffer.size() * sizeof(trace_instr_format_t) >= INSTR_BUFFER_SIZE) {
+    outfile.write(reinterpret_cast<const char*>(instr_buffer.data()), 
+                 instr_buffer.size() * sizeof(trace_instr_format_t));
+    instr_buffer.clear();
+  }
+}
+
+void BranchOrNot(UINT32 taken)
+{
+  curr_instr.is_branch = 1;
+  curr_instr.branch_taken = taken;
+}
+
+template <typename T>
+void WriteToSet(T* begin, T* end, UINT32 r)
+{
+  auto set_end = std::find(begin, end, 0);
+  auto found_reg = std::find(begin, set_end, r); // check to see if this register is already in the list
+  *found_reg = r;
+}
+
 // Malloc tracking functions
 VOID MallocBefore(ADDRINT size, ADDRINT ip)
 {
@@ -153,47 +193,6 @@ VOID ReallocAfter(ADDRINT ret)
     WriteCurrentInstruction();
     malloc_traces.pop_back();
   }
-}
-
-void ResetCurrentInstruction(VOID* ip)
-{
-  curr_instr = {};
-  curr_instr.ip = (unsigned long long int)ip;
-}
-
-BOOL ShouldWrite()
-{
-  ++instrCount;
-  if (KnobTraceInstructions.Value() == 0) {
-    return instrCount > KnobSkipInstructions.Value();
-  }
-  return (instrCount > KnobSkipInstructions.Value()) && (instrCount <= (KnobTraceInstructions.Value() + KnobSkipInstructions.Value()));
-}
-
-void WriteCurrentInstruction()
-{
-  instr_buffer.push_back(curr_instr);
-
-  if (instr_buffer.size() * sizeof(trace_instr_format_t) >= INSTR_BUFFER_SIZE) {
-    outfile.write(reinterpret_cast<const char*>(instr_buffer.data()), 
-                 instr_buffer.size() * sizeof(trace_instr_format_t));
-    }
-    instr_buffer.clear();
-  }
-}
-
-void BranchOrNot(UINT32 taken)
-{
-  curr_instr.is_branch = 1;
-  curr_instr.branch_taken = taken;
-}
-
-template <typename T>
-void WriteToSet(T* begin, T* end, UINT32 r)
-{
-  auto set_end = std::find(begin, end, 0);
-  auto found_reg = std::find(begin, set_end, r); // check to see if this register is already in the list
-  *found_reg = r;
 }
 
 /* ===================================================================== */
