@@ -25,6 +25,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <unordered_set>
 
 #include "../../inc/trace_instruction.h"
 #include "pin.H"
@@ -57,6 +58,14 @@ KNOB<UINT64> KnobSkipInstructions(KNOB_MODE_WRITEONCE, "pintool", "s", "0", "How
 
 KNOB<UINT64> KnobTraceInstructions(KNOB_MODE_WRITEONCE, "pintool", "t", "0", "How many instructions to trace (0 for unlimited)");
 
+KNOB<UINT64> KnobMallocSizeThreshold(KNOB_MODE_WRITEONCE, "pintool", "h", "0", "Minimum malloc size to trace (0 to trace all)");
+
+/* ===================================================================== */
+// Malloc tracking state
+/* ===================================================================== */
+std::unordered_set<ADDRINT> tracked_malloc_addresses; // Set of malloc addresses that were traced
+std::vector<trace_instr_format_t> pending_malloc_events; // Stack to track pending malloc/calloc/realloc before-after pairs
+
 /* ===================================================================== */
 // Utilities
 /* ===================================================================== */
@@ -68,8 +77,10 @@ INT32 Usage()
 {
   std::cerr << "This tool creates a register and memory access trace" << std::endl
             << "Specify the output trace file with -o" << std::endl
+            << "Specify the malloc output trace file with -m" << std::endl
             << "Specify the number of instructions to skip before tracing with -s" << std::endl
             << "Specify the number of instructions to trace with -t" << std::endl
+            << "Specify minimum malloc size to trace with -h (0 to trace all mallocs)" << std::endl
             << std::endl;
 
   std::cerr << KNOB_BASE::StringKnobSummary() << std::endl;
@@ -135,61 +146,154 @@ void WriteToSet(T* begin, T* end, UINT32 r)
 // Malloc tracking functions
 VOID MallocBefore(ADDRINT size, ADDRINT ip)
 {
+  // Check if size meets threshold
+  if (size < KnobMallocSizeThreshold.Value()) {
+    return; // Skip small mallocs
+  }
+  
   malloc_outfile << "MALLOC_SIZE " << size << std::endl;
-  event_instr = {};
-  event_instr.ip = (unsigned long long int)ip;
-  event_instr.is_malloc = 1; // 1: malloc
-  event_instr.source_memory[0] = size;
+  
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 1; // 1: malloc
+  instr.source_memory[0] = size;
+  pending_malloc_events.push_back(instr);
 }
 
 VOID MallocAfter(ADDRINT ret)
 {
+  // Check if there's a pending event
+  if (pending_malloc_events.empty()) {
+    return;
+  }
+  
+  // Get the pending event from stack
+  trace_instr_format_t instr = pending_malloc_events.back();
+  pending_malloc_events.pop_back();
+  
+  // Verify this is a malloc event
+  if (instr.is_malloc != 1) {
+    return;
+  }
+  
   malloc_outfile << "MALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
-  event_instr.destination_memory[0] = ret;
+  instr.destination_memory[0] = ret;
+  
+  event_instr = instr;
   WriteEventInstruction();
+  
+  // Record this address in history for future free checks
+  tracked_malloc_addresses.insert(ret);
 }
 
 VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
 {
+  // Check if this free corresponds to a tracked malloc
+  bool is_tracked = tracked_malloc_addresses.find(ptr) != tracked_malloc_addresses.end();
+  
+  if (!is_tracked) {
+    return; // Skip frees of untracked mallocs
+  }
+  
   malloc_outfile << "FREE 0x" << std::hex << ptr << std::dec << std::endl;
+  
   event_instr = {};
   event_instr.ip = (unsigned long long int)ip;
   event_instr.is_malloc = 4; // 4: free
   event_instr.source_memory[0] = ptr;
   WriteEventInstruction();
+  
+  // Remove from history after freeing
+  tracked_malloc_addresses.erase(ptr);
 }
 
 VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
 {
+  ADDRINT total_size = nmemb * size;
+  
+  // Check if size meets threshold
+  if (total_size < KnobMallocSizeThreshold.Value()) {
+    return; // Skip small callocs
+  }
+  
   malloc_outfile << "CALLOC_SIZE " << nmemb << " " << size << std::endl;
-  event_instr = {};
-  event_instr.ip = (unsigned long long int)ip;
-  event_instr.is_malloc = 2; // 2: calloc
-  event_instr.source_memory[0] = nmemb * size;
+  
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 2; // 2: calloc
+  instr.source_memory[0] = total_size;
+  pending_malloc_events.push_back(instr);
 }
 
 VOID CallocAfter(ADDRINT ret)
 {
+  // Check if there's a pending event
+  if (pending_malloc_events.empty()) {
+    return;
+  }
+  
+  // Get the pending event from stack
+  trace_instr_format_t instr = pending_malloc_events.back();
+  pending_malloc_events.pop_back();
+  
+  // Verify this is a calloc event
+  if (instr.is_malloc != 2) {
+    return;
+  }
+  
   malloc_outfile << "CALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
-  event_instr.destination_memory[0] = ret;
+  instr.destination_memory[0] = ret;
+  
+  event_instr = instr;
   WriteEventInstruction();
+  
+  // Record this address in history for future free checks
+  tracked_malloc_addresses.insert(ret);
 }
 
 VOID ReallocBefore(ADDRINT ptr, ADDRINT size, ADDRINT ip)
 {
+  // Check if size meets threshold
+  if (size < KnobMallocSizeThreshold.Value()) {
+    return; // Skip small reallocs
+  }
+  
   malloc_outfile << "REALLOC_SIZE" << std::dec << " " << size << " REALLOC_PTR 0x" << std::hex << ptr << std::dec << std::endl;
-  event_instr = {};
-  event_instr.ip = (unsigned long long int)ip;
-  event_instr.is_malloc = 3; // 3: realloc
-  event_instr.source_memory[0] = size;
-  event_instr.source_memory[1] = ptr;
+  
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 3; // 3: realloc
+  instr.source_memory[0] = size;
+  instr.source_memory[1] = ptr;
+  pending_malloc_events.push_back(instr);
 }
 
 VOID ReallocAfter(ADDRINT ret)
 {
+  // Check if there's a pending event
+  if (pending_malloc_events.empty()) {
+    return;
+  }
+  
+  // Get the pending event from stack
+  trace_instr_format_t instr = pending_malloc_events.back();
+  pending_malloc_events.pop_back();
+  
+  // Verify this is a realloc event
+  if (instr.is_malloc != 3) {
+    return;
+  }
+  
   malloc_outfile << "REALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
-  event_instr.destination_memory[0] = ret;
+  instr.destination_memory[0] = ret;
+  
+  event_instr = instr;
   WriteEventInstruction();
+  
+  // Update history: remove old address, add new address
+  ADDRINT old_ptr = instr.source_memory[1];
+  tracked_malloc_addresses.erase(old_ptr);
+  tracked_malloc_addresses.insert(ret);
 }
 
 /* ===================================================================== */
