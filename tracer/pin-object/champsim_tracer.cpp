@@ -58,7 +58,7 @@ KNOB<UINT64> KnobSkipInstructions(KNOB_MODE_WRITEONCE, "pintool", "s", "0", "How
 
 KNOB<UINT64> KnobTraceInstructions(KNOB_MODE_WRITEONCE, "pintool", "t", "0", "How many instructions to trace (0 for unlimited)");
 
-KNOB<UINT64> KnobMallocSizeThreshold(KNOB_MODE_WRITEONCE, "pintool", "h", "0", "Minimum malloc size to trace (0 to trace all)");
+KNOB<UINT64> KnobMallocSizeThreshold(KNOB_MODE_WRITEONCE, "pintool", "k", "0", "Minimum malloc size to trace (0 to trace all)");
 
 /* ===================================================================== */
 // Malloc tracking state
