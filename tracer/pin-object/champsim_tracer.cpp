@@ -151,8 +151,6 @@ VOID MallocBefore(ADDRINT size, ADDRINT ip)
     return; // Skip small mallocs
   }
   
-  malloc_outfile << "MALLOC_SIZE " << size << std::endl;
-  
   trace_instr_format_t instr = {};
   instr.ip = (unsigned long long int)ip;
   instr.is_malloc = 1; // 1: malloc
@@ -176,7 +174,8 @@ VOID MallocAfter(ADDRINT ret)
     return;
   }
   
-  malloc_outfile << "MALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
+  ADDRINT size = instr.source_memory[0];
+  malloc_outfile << "malloc(" << std::dec << size << ")=0x" << std::hex << ret << std::dec << std::endl;
   instr.destination_memory[0] = ret;
   
   event_instr = instr;
@@ -195,7 +194,7 @@ VOID FreeBefore(ADDRINT ptr, ADDRINT ip)
     return; // Skip frees of untracked mallocs
   }
   
-  malloc_outfile << "FREE 0x" << std::hex << ptr << std::dec << std::endl;
+  malloc_outfile << "free(0x" << std::hex << ptr << ")" << std::dec << std::endl;
   
   event_instr = {};
   event_instr.ip = (unsigned long long int)ip;
@@ -215,8 +214,6 @@ VOID CallocBefore(ADDRINT nmemb, ADDRINT size, ADDRINT ip)
   if (total_size < KnobMallocSizeThreshold.Value()) {
     return; // Skip small callocs
   }
-  
-  malloc_outfile << "CALLOC_SIZE " << nmemb << " " << size << std::endl;
   
   trace_instr_format_t instr = {};
   instr.ip = (unsigned long long int)ip;
@@ -241,7 +238,8 @@ VOID CallocAfter(ADDRINT ret)
     return;
   }
   
-  malloc_outfile << "CALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
+  ADDRINT total_size = instr.source_memory[0];
+  malloc_outfile << "calloc(" << std::dec << total_size << ")=0x" << std::hex << ret << std::dec << std::endl;
   instr.destination_memory[0] = ret;
   
   event_instr = instr;
@@ -257,8 +255,6 @@ VOID ReallocBefore(ADDRINT ptr, ADDRINT size, ADDRINT ip)
   if (size < KnobMallocSizeThreshold.Value()) {
     return; // Skip small reallocs
   }
-  
-  malloc_outfile << "REALLOC_SIZE" << std::dec << " " << size << " REALLOC_PTR 0x" << std::hex << ptr << std::dec << std::endl;
   
   trace_instr_format_t instr = {};
   instr.ip = (unsigned long long int)ip;
@@ -284,14 +280,15 @@ VOID ReallocAfter(ADDRINT ret)
     return;
   }
   
-  malloc_outfile << "REALLOC_RET 0x" << std::hex << ret << std::dec << std::endl;
+  ADDRINT size = instr.source_memory[0];
+  ADDRINT old_ptr = instr.source_memory[1];
+  malloc_outfile << "realloc(" << std::dec << size << ", 0x" << std::hex << old_ptr << ")=0x" << ret << std::dec << std::endl;
   instr.destination_memory[0] = ret;
   
   event_instr = instr;
   WriteEventInstruction();
   
   // Update history: remove old address, add new address
-  ADDRINT old_ptr = instr.source_memory[1];
   tracked_malloc_addresses.erase(old_ptr);
   tracked_malloc_addresses.insert(ret);
 }
