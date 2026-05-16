@@ -94,7 +94,7 @@ public:
   bulk_tracereader(uint8_t cpu_idx, std::string tf) : cpu(cpu_idx), trace_file(tf) {}
   bulk_tracereader(uint8_t cpu_idx, F&& file) : cpu(cpu_idx), trace_file(std::move(file)) {}
 
-  [[nodiscard]] bool eof() const { return trace_file.eof() && std::size(instr_buffer) <= refresh_thresh; }
+  [[nodiscard]] bool eof() const { return eof_ || (trace_file.eof() && std::size(instr_buffer) <= refresh_thresh); }
 };
 
 ooo_model_instr apply_branch_target(ooo_model_instr branch, const ooo_model_instr& target);
@@ -110,7 +110,7 @@ void set_branch_targets(It begin, It end)
 template <typename T, typename F>
 ooo_model_instr bulk_tracereader<T, F>::operator()()
 {
-  if (std::size(instr_buffer) <= refresh_thresh) {
+  while (std::size(instr_buffer) <= refresh_thresh) {
     std::array<T, buffer_size - refresh_thresh> trace_read_buf;
     std::array<char, std::size(trace_read_buf) * sizeof(T)> raw_buf;
     std::size_t bytes_read;
@@ -118,6 +118,13 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
     // Read from trace file
     trace_file.read(std::data(raw_buf), std::size(raw_buf));
     bytes_read = static_cast<std::size_t>(trace_file.gcount());
+    
+    // If no bytes were read, we've reached the end of file
+    if (bytes_read == 0) {
+      eof_ = true;
+      break;
+    }
+    
     eof_ = trace_file.eof();
 
     // Transform bytes into trace format instructions
@@ -126,10 +133,30 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
     // Inflate trace format into core model instructions
     auto begin = std::begin(trace_read_buf);
     auto end = std::next(begin, bytes_read / sizeof(T));
-    std::transform(begin, end, std::back_inserter(instr_buffer), [cpu = this->cpu](T t) { return ooo_model_instr{cpu, t}; });
+    
+    // Filter out malloc-related instructions and transform to core model instructions
+    for (auto it = begin; it != end; ++it) {
+      // Skip malloc/calloc/realloc/free instructions (is_malloc != 0)
+      if constexpr (std::is_same_v<T, input_instr> || std::is_same_v<T, cloudsuite_instr>) {
+        if (it->is_malloc != 0) {
+          continue; // Ignore malloc-related instructions, they won't enter instr_buffer
+        }
+      }
+      instr_buffer.emplace_back(cpu, *it);
+    }
 
     // Set branch targets
     set_branch_targets(std::begin(instr_buffer), std::end(instr_buffer));
+    
+    // If we've reached EOF, stop trying to read more data
+    if (eof_) {
+      break;
+    }
+  }
+
+  // Check if buffer is empty before accessing to avoid undefined behavior
+  if (instr_buffer.empty()) {
+    throw std::runtime_error("Trace reader: no valid instructions available (all instructions filtered or EOF reached)");
   }
 
   auto retval = instr_buffer.front();
