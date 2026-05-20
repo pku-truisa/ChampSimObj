@@ -19,6 +19,7 @@
 
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <memory>
 #include <numeric>
 #include <string>
@@ -83,6 +84,10 @@ class bulk_tracereader
   uint8_t cpu;
   bool eof_ = false;
   F trace_file;
+  
+  // Malloc trace output file (using unique_ptr to maintain move semantics)
+  std::unique_ptr<std::ofstream> malloc_trace_file_;
+  bool malloc_trace_enabled_ = false;
 
   constexpr static std::size_t buffer_size = 128;
   constexpr static std::size_t refresh_thresh = 1;
@@ -91,10 +96,22 @@ class bulk_tracereader
 public:
   ooo_model_instr operator()();
 
-  bulk_tracereader(uint8_t cpu_idx, std::string tf) : cpu(cpu_idx), trace_file(tf) {}
-  bulk_tracereader(uint8_t cpu_idx, F&& file) : cpu(cpu_idx), trace_file(std::move(file)) {}
+  bulk_tracereader(uint8_t cpu_idx, std::string tf) : cpu(cpu_idx), trace_file(tf) {
+    // Open malloc trace file with .malloc extension
+    std::string malloc_trace_filename = tf + ".malloc";
+    malloc_trace_file_ = std::make_unique<std::ofstream>(malloc_trace_filename, std::ios_base::out);
+    if (malloc_trace_file_ && *malloc_trace_file_) {
+      malloc_trace_enabled_ = true;
+    }
+  }
+  
+  bulk_tracereader(uint8_t cpu_idx, F&& file) : cpu(cpu_idx), trace_file(std::move(file)) {
+    // When using an already opened file stream, we can't determine the original filename
+    // So we disable malloc tracing in this case
+    malloc_trace_enabled_ = false;
+  }
 
-  [[nodiscard]] bool eof() const { return trace_file.eof() && std::size(instr_buffer) <= refresh_thresh; }
+  [[nodiscard]] bool eof() const { return eof_ || (trace_file.eof() && std::size(instr_buffer) <= refresh_thresh); }
 };
 
 ooo_model_instr apply_branch_target(ooo_model_instr branch, const ooo_model_instr& target);
@@ -110,7 +127,7 @@ void set_branch_targets(It begin, It end)
 template <typename T, typename F>
 ooo_model_instr bulk_tracereader<T, F>::operator()()
 {
-  if (std::size(instr_buffer) <= refresh_thresh) {
+  while (std::size(instr_buffer) <= refresh_thresh) {
     std::array<T, buffer_size - refresh_thresh> trace_read_buf;
     std::array<char, std::size(trace_read_buf) * sizeof(T)> raw_buf;
     std::size_t bytes_read;
@@ -118,6 +135,13 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
     // Read from trace file
     trace_file.read(std::data(raw_buf), std::size(raw_buf));
     bytes_read = static_cast<std::size_t>(trace_file.gcount());
+    
+    // If no bytes were read, we've reached the end of file
+    if (bytes_read == 0) {
+      eof_ = true;
+      break;
+    }
+    
     eof_ = trace_file.eof();
 
     // Transform bytes into trace format instructions
@@ -126,10 +150,53 @@ ooo_model_instr bulk_tracereader<T, F>::operator()()
     // Inflate trace format into core model instructions
     auto begin = std::begin(trace_read_buf);
     auto end = std::next(begin, bytes_read / sizeof(T));
-    std::transform(begin, end, std::back_inserter(instr_buffer), [cpu = this->cpu](T t) { return ooo_model_instr{cpu, t}; });
+    
+    // Filter out malloc-related instructions and transform to core model instructions
+    for (auto it = begin; it != end; ++it) {
+      // Check for malloc/calloc/realloc/free instructions and write to malloc trace
+      if constexpr (std::is_same_v<T, input_instr> || std::is_same_v<T, cloudsuite_instr>) {
+        if (it->is_malloc != 0 && malloc_trace_enabled_ && malloc_trace_file_) {
+          // Write to malloc trace file in the same format as champsim_tracer.cpp
+          switch (it->is_malloc) {
+            case 1: // malloc
+              *malloc_trace_file_ << "malloc(" << std::dec << it->source_memory[0] 
+                                << ")=0x" << std::hex << it->destination_memory[0] 
+                                << std::dec << std::endl;
+              break;
+            case 2: // calloc
+              *malloc_trace_file_ << "calloc(" << std::dec << it->source_memory[0] 
+                                << ")=0x" << std::hex << it->destination_memory[0] 
+                                << std::dec << std::endl;
+              break;
+            case 3: // realloc
+              *malloc_trace_file_ << "realloc(" << std::dec << it->source_memory[0] 
+                                << ", 0x" << std::hex << it->source_memory[1] 
+                                << ")=0x" << it->destination_memory[0] 
+                                << std::dec << std::endl;
+              break;
+            case 4: // free
+              *malloc_trace_file_ << "free(0x" << std::hex << it->source_memory[0] 
+                                << ")" << std::dec << std::endl;
+              break;
+          }
+          continue; // Ignore malloc-related instructions, they won't enter instr_buffer
+        }
+      }
+      instr_buffer.emplace_back(cpu, *it);
+    }
 
     // Set branch targets
     set_branch_targets(std::begin(instr_buffer), std::end(instr_buffer));
+    
+    // If we've reached EOF, stop trying to read more data
+    if (eof_) {
+      break;
+    }
+  }
+
+  // Check if buffer is empty before accessing to avoid undefined behavior
+  if (instr_buffer.empty()) {
+    throw std::runtime_error("Trace reader: no valid instructions available (all instructions filtered or EOF reached)");
   }
 
   auto retval = instr_buffer.front();
