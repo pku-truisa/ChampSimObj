@@ -429,6 +429,11 @@ VOID MremapAfter(ADDRINT ret)
 // RTN instrumentation for malloc/free/calloc/realloc
 VOID ImageLoad(IMG img, VOID* v)
 {
+  // Only instrument the main executable, not shared libraries or system libraries
+  if (!IMG_IsMainExecutable(img)) {
+    return;
+  }
+
   RTN rtn = RTN_FindByName(img, "malloc");
   if (RTN_Valid(rtn)) {
     RTN_Open(rtn);
