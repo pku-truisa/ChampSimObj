@@ -67,6 +67,12 @@ std::unordered_set<ADDRINT> tracked_malloc_addresses; // Set of malloc addresses
 std::vector<trace_instr_format_t> pending_malloc_events; // Stack to track pending malloc/calloc/realloc before-after pairs
 
 /* ===================================================================== */
+// Mmap tracking state
+/* ===================================================================== */
+std::unordered_set<ADDRINT> tracked_mmap_addresses; // Set of mmap addresses that were traced
+std::vector<trace_instr_format_t> pending_mmap_events; // Stack to track pending mmap/mremap before-after pairs
+
+/* ===================================================================== */
 // Utilities
 /* ===================================================================== */
 
@@ -294,6 +300,129 @@ VOID ReallocAfter(ADDRINT ret)
 }
 
 /* ===================================================================== */
+// Mmap tracking functions
+/* ===================================================================== */
+
+VOID MmapBefore(ADDRINT length, ADDRINT ip)
+{
+  // Check if size meets threshold
+  if (length < KnobMallocSizeThreshold.Value()) {
+    return; // Skip small mmaps
+  }
+  
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 5; // 5: mmap
+  instr.source_memory[0] = length;
+  pending_mmap_events.push_back(instr);
+}
+
+VOID MmapAfter(ADDRINT ret)
+{
+  // Check if there's a pending event
+  if (pending_mmap_events.empty()) {
+    return;
+  }
+  
+  // Get the pending event from stack
+  trace_instr_format_t instr = pending_mmap_events.back();
+  pending_mmap_events.pop_back();
+  
+  // Verify this is a mmap event
+  if (instr.is_malloc != 5) {
+    return;
+  }
+  
+  // Check for MAP_FAILED (-1)
+  if (ret == (ADDRINT)-1) {
+    return; // Skip failed mmaps
+  }
+  
+  ADDRINT length = instr.source_memory[0];
+  malloc_outfile << "mmap(" << std::dec << length << ")=0x" << std::hex << ret << std::dec << std::endl;
+  instr.destination_memory[0] = ret;
+  
+  event_instr = instr;
+  WriteEventInstruction();
+  
+  // Record this address in history for future munmap checks
+  tracked_mmap_addresses.insert(ret);
+}
+
+VOID MunmapBefore(ADDRINT addr, ADDRINT length, ADDRINT ip)
+{
+  // Check if this munmap corresponds to a tracked mmap
+  bool is_tracked = tracked_mmap_addresses.find(addr) != tracked_mmap_addresses.end();
+  
+  if (!is_tracked) {
+    return; // Skip unmapping of untracked addresses
+  }
+  
+  malloc_outfile << "munmap(0x" << std::hex << addr << ", " << std::dec << length << ")" << std::dec << std::endl;
+  
+  event_instr = {};
+  event_instr.ip = (unsigned long long int)ip;
+  event_instr.is_malloc = 6; // 6: munmap
+  event_instr.source_memory[0] = addr;
+  event_instr.source_memory[1] = length;
+  WriteEventInstruction();
+  
+  // Remove from history after unmapping
+  tracked_mmap_addresses.erase(addr);
+}
+
+VOID MremapBefore(ADDRINT old_addr, ADDRINT old_size, ADDRINT new_size, ADDRINT flags, ADDRINT ip)
+{
+  // Check if new size meets threshold
+  if (new_size < KnobMallocSizeThreshold.Value()) {
+    return; // Skip small mremaps
+  }
+  
+  trace_instr_format_t instr = {};
+  instr.ip = (unsigned long long int)ip;
+  instr.is_malloc = 7; // 7: mremap
+  instr.source_memory[0] = new_size;
+  instr.source_memory[1] = old_addr;
+  instr.source_memory[2] = old_size;
+  pending_mmap_events.push_back(instr);
+}
+
+VOID MremapAfter(ADDRINT ret)
+{
+  // Check if there's a pending event
+  if (pending_mmap_events.empty()) {
+    return;
+  }
+  
+  // Get the pending event from stack
+  trace_instr_format_t instr = pending_mmap_events.back();
+  pending_mmap_events.pop_back();
+  
+  // Verify this is a mremap event
+  if (instr.is_malloc != 7) {
+    return;
+  }
+  
+  // Check for MAP_FAILED (-1)
+  if (ret == (ADDRINT)-1) {
+    return; // Skip failed mremaps
+  }
+  
+  ADDRINT new_size = instr.source_memory[0];
+  ADDRINT old_addr = instr.source_memory[1];
+  ADDRINT old_size = instr.source_memory[2];
+  malloc_outfile << "mremap(" << std::dec << new_size << ", 0x" << std::hex << old_addr << ", " << old_size << ")=0x" << ret << std::dec << std::endl;
+  instr.destination_memory[0] = ret;
+  
+  event_instr = instr;
+  WriteEventInstruction();
+  
+  // Update history: remove old address, add new address
+  tracked_mmap_addresses.erase(old_addr);
+  tracked_mmap_addresses.insert(ret);
+}
+
+/* ===================================================================== */
 // Instrumentation callbacks
 /* ===================================================================== */
 
@@ -328,6 +457,46 @@ VOID ImageLoad(IMG img, VOID* v)
     RTN_Open(rtn);
     RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)ReallocBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_INST_PTR, IARG_END);
     RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)ReallocAfter, IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
+    RTN_Close(rtn);
+  }
+
+  // Instrument mmap
+  rtn = RTN_FindByName(img, "mmap");
+  if (RTN_Valid(rtn)) {
+    RTN_Open(rtn);
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)MmapBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_INST_PTR, IARG_END);
+    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)MmapAfter, IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
+    RTN_Close(rtn);
+  }
+
+  // Instrument mmap64 (for 64-bit systems)
+  rtn = RTN_FindByName(img, "mmap64");
+  if (RTN_Valid(rtn)) {
+    RTN_Open(rtn);
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)MmapBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_INST_PTR, IARG_END);
+    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)MmapAfter, IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
+    RTN_Close(rtn);
+  }
+
+  // Instrument munmap
+  rtn = RTN_FindByName(img, "munmap");
+  if (RTN_Valid(rtn)) {
+    RTN_Open(rtn);
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)MunmapBefore, IARG_FUNCARG_ENTRYPOINT_VALUE, 0, IARG_FUNCARG_ENTRYPOINT_VALUE, 1, IARG_INST_PTR, IARG_END);
+    RTN_Close(rtn);
+  }
+
+  // Instrument mremap (Linux-specific)
+  rtn = RTN_FindByName(img, "mremap");
+  if (RTN_Valid(rtn)) {
+    RTN_Open(rtn);
+    RTN_InsertCall(rtn, IPOINT_BEFORE, (AFUNPTR)MremapBefore, 
+                   IARG_FUNCARG_ENTRYPOINT_VALUE, 0,  // old_addr
+                   IARG_FUNCARG_ENTRYPOINT_VALUE, 1,  // old_size
+                   IARG_FUNCARG_ENTRYPOINT_VALUE, 2,  // new_size
+                   IARG_FUNCARG_ENTRYPOINT_VALUE, 3,  // flags
+                   IARG_INST_PTR, IARG_END);
+    RTN_InsertCall(rtn, IPOINT_AFTER, (AFUNPTR)MremapAfter, IARG_FUNCRET_EXITPOINT_VALUE, IARG_END);
     RTN_Close(rtn);
   }
 }

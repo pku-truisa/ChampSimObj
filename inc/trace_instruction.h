@@ -42,14 +42,21 @@ struct input_instr {
   unsigned char branch_taken;
 
   // memory object info
-  unsigned char is_malloc; // 0: is not object; 1: malloc, 2: calloc, 3: realloc, 4: free
+  unsigned char is_malloc; // 0: is not object; 1: malloc, 2: calloc, 3: realloc, 4: free, 5: mmap, 6: munmap, 7: mremap
 
   unsigned char destination_registers[NUM_INSTR_DESTINATIONS]; // output registers
   unsigned char source_registers[NUM_INSTR_SOURCES];           // input registers
 
   unsigned long long destination_memory[NUM_INSTR_DESTINATIONS]; // output memory; for malloc, this is return value
-  unsigned long long source_memory[NUM_INSTR_SOURCES];           // input memory; for malloc/calloc/realloc, [0] is the size argument; for free, [0] is the pointer argument
-                                                                 //               for realloc, [1] is the pointer argument
+  unsigned long long source_memory[NUM_INSTR_SOURCES];           // input memory
+                                                                 //   for malloc/calloc: [0] = size
+                                                                 //   for free: [0] = pointer
+                                                                 //   for realloc: [0] = new_size, [1] = old_ptr
+                                                                 //   for mmap: [0] = length
+                                                                 //   for munmap: [0] = addr, [1] = length
+                                                                 //   for mremap: [0] = new_size, [1] = old_addr, [2] = old_size
+
+  unsigned char asid[2];
 };
 
 struct cloudsuite_instr {
@@ -61,17 +68,20 @@ struct cloudsuite_instr {
   unsigned char branch_taken;
 
   // memory object info
-  unsigned char is_malloc; // 0: is not object; 1: malloc, 2: calloc, 3: realloc, 4: free
+  unsigned char is_malloc; // 0: is not object; 1: malloc, 2: calloc, 3: realloc, 4: free, 5: mmap, 6: munmap, 7: mremap
 
   unsigned char destination_registers[NUM_INSTR_DESTINATIONS]; // output registers
   unsigned char source_registers[NUM_INSTR_SOURCES];           // input registers
 
   unsigned long long destination_memory[NUM_INSTR_DESTINATIONS]; // output memory; for malloc, this is return value
-  unsigned long long source_memory[NUM_INSTR_SOURCES];           // input memory; for malloc/calloc/realloc, [0] is the size argument; for free, [0] is the pointer argument
-                                                                 //               for realloc, [1] is the pointer argument
+  unsigned long long source_memory[NUM_INSTR_SOURCES];           // input memory
+                                                                 //   for malloc/calloc: [0] = size
+                                                                 //   for free: [0] = pointer
+                                                                 //   for realloc: [0] = new_size, [1] = old_ptr
+                                                                 //   for mmap: [0] = length
+                                                                 //   for munmap: [0] = addr, [1] = length
+                                                                 //   for mremap: [0] = new_size, [1] = old_addr, [2] = old_size
+                                                                 //   for brk: [0] = new_break_address
+                                                                 //   for sbrk: [0] = increment, [1] = old_break, destination[0] = new_break
 
   unsigned char asid[2];
-};
-// NOLINTEND(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays)
-
-#endif
